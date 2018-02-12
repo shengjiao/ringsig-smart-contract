@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"math/big"
 
+	"github.com/abovemealsky/urs"
 	"github.com/hyperledger/fabric/core/chaincode/shim"
 	pb "github.com/hyperledger/fabric/protos/peer"
 )
@@ -51,9 +52,11 @@ func (t *sc) Init(stub shim.ChaincodeStubInterface) pb.Response {
 	return shim.Success(nil)
 }
 
+//configure topic
+
 //{topic:string, stage:start}
 //stage: prepare(one can init public key), start(one can submit tx for topic) or finish (no more action is allowed)
-func (t *sc) configureTopic(stub shim.ChaincodeStubInterface, args []string) pb.Response {
+func (t *sc) setStage(stub shim.ChaincodeStubInterface, args []string) pb.Response {
 	if len(args) != 1 {
 		return shim.Error("Incorrect number of arguments. Expecting 1.")
 	}
@@ -68,8 +71,8 @@ func (t *sc) configureTopic(stub shim.ChaincodeStubInterface, args []string) pb.
 	}
 	topic := getSafeString(params["topic"])
 	stage := getSafeString(params["stage"])
-	logger.Info("configureTopic: topic=", topic)
-	logger.Info("configureTopic: stage=", stage)
+	logger.Info("setStage: topic=", topic)
+	logger.Info("setStage: stage=", stage)
 	//Store the topic record
 	err = stub.PutState(topic, []byte(recBytes))
 	if err != nil {
@@ -127,8 +130,7 @@ func (t *sc) initPublicKey(stub shim.ChaincodeStubInterface, args []string) pb.R
 	logger.Info("initPublicKey: uid=", uid)
 	logger.Info("initPublicKey: x=", x)
 	logger.Info("initPublicKey: y=", y)
-	pk := ecdsa.PublicKey{DefaultCurve, x, y}
-	logger.Info("initPublicKey: pk=", pk)
+	logger.Info("Curve ", DefaultCurve)
 
 	//Store the user key records
 	err = stub.PutState(topic+"_"+PUBLICKEY+":"+uid, []byte(recBytes))
@@ -190,7 +192,7 @@ func (t *sc) getPublicKey(stub shim.ChaincodeStubInterface, args []string) pb.Re
 	return shim.Success(keyDetails)
 }
 
-//{topic:string,uid:string}
+//{topic:string}
 func (t *sc) getKeyRing(stub shim.ChaincodeStubInterface, args []string) pb.Response {
 	if len(args) != 1 {
 		return shim.Error("Incorrect number of arguments. Expecting 1")
@@ -203,7 +205,7 @@ func (t *sc) getKeyRing(stub shim.ChaincodeStubInterface, args []string) pb.Resp
 		return shim.Error("failed to unmarshal")
 	}
 	if len(params) != 1 {
-		return shim.Error("Incorrect number of fields. Expecting 2.")
+		return shim.Error("Incorrect number of fields. Expecting 1.")
 	}
 	topic := getSafeString(params["topic"])
 
@@ -214,6 +216,128 @@ func (t *sc) getKeyRing(stub shim.ChaincodeStubInterface, args []string) pb.Resp
 		return shim.Error("This topic does not exist: " + topic)
 	}
 	return shim.Success(keyRingDetails)
+}
+
+//{topic:string,uid:string,msg:string,sig:ring signature,keyIndex:["u01","u04","u10",...]}
+func (t *sc) submit(stub shim.ChaincodeStubInterface, args []string) pb.Response {
+	if len(args) != 1 {
+		return shim.Error("Incorrect number of arguments. Expecting 1")
+	}
+	var err error
+	var params map[string]interface{}
+	recBytes := args[0]
+	err = json.Unmarshal([]byte(recBytes), &params)
+	if err != nil {
+		return shim.Error("failed to unmarshal")
+	}
+	if len(params) != 5 {
+		return shim.Error("Incorrect number of fields. Expecting 5.")
+	}
+	topic := getSafeString(params["topic"])
+	err = t.checkTopic(stub, topic, TOPIC.stage["start"])
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	uid := getSafeString(params["uid"])
+	msg := getSafeString(params["msg"])
+	logger.Info("topic:", topic)
+	logger.Info("uid:", uid)
+	logger.Info("msg:", msg)
+	signature := params["sig"]
+	ringSig, err := t.parseUrsSig(stub, signature)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	//fmt.Println("ringSig:",ringSig)
+	keyIndex := params["keyIndex"]
+	keyRing, err := t.parseKeyRing(stub, topic, keyIndex)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	//fmt.Println("keyRing:",keyRing)
+
+	//verify signature
+	if !urs.Verify(keyRing, []byte(msg), ringSig) {
+		return shim.Error("ring signature verification failed")
+	}
+	return shim.Success(nil)
+}
+
+func (t *sc) parseUrsSig(stub shim.ChaincodeStubInterface, signature interface{}) (*urs.RingSign, error) {
+	bytes, err := json.Marshal(signature)
+	if err != nil {
+		return nil, errors.New("Failed to marshal signature")
+	}
+	var sigMap map[string]interface{}
+	err = json.Unmarshal(bytes, &sigMap)
+	if err != nil {
+		return nil, errors.New("Failed to unmarshal sigMap")
+	}
+	if len(sigMap) != 4 {
+		return nil, errors.New("Incorrect number of fields in sigMap. Expecting 4")
+	}
+
+	hsx, _ := new(big.Int).SetString(getSafeString(sigMap["hsx"]), 10)
+	hsy, _ := new(big.Int).SetString(getSafeString(sigMap["hsy"]), 10)
+
+	cBytes, err := json.Marshal(sigMap["c"])
+	if err != nil {
+		return nil, errors.New("Failed to marshal signature c")
+	}
+	var cArr []interface{}
+	err = json.Unmarshal(cBytes, &cArr)
+	if err != nil {
+		return nil, errors.New("Failed to unmarshal cArr")
+	}
+	cInt := make([]*big.Int, 0)
+	for i := range cArr {
+		v, _ := new(big.Int).SetString(getSafeString(cArr[i]), 10)
+		cInt = append(cInt, v)
+	}
+
+	tBytes, err := json.Marshal(sigMap["t"])
+	if err != nil {
+		return nil, errors.New("Failed to marshal signature t")
+	}
+	var tArr []interface{}
+	err = json.Unmarshal(tBytes, &tArr)
+	if err != nil {
+		return nil, errors.New("Failed to unmarshal tArr")
+	}
+	tInt := make([]*big.Int, 0)
+	for i := range tArr {
+		v, _ := new(big.Int).SetString(getSafeString(tArr[i]), 10)
+		tInt = append(tInt, v)
+	}
+
+	return &urs.RingSign{hsx, hsy, cInt, tInt}, nil
+}
+
+func (t *sc) parseKeyRing(stub shim.ChaincodeStubInterface, topic string, keyIndex interface{}) (*urs.PublicKeyRing, error) {
+	bytes, err := json.Marshal(keyIndex)
+	if err != nil {
+		return nil, errors.New("Failed to marshal keyIndex")
+	}
+	var indexArr []map[string]string
+	err = json.Unmarshal(bytes, &indexArr)
+	if err != nil {
+		return nil, errors.New("Failed to unmarshal indexArr")
+	}
+	keyring := urs.NewPublicKeyRing(uint(len(indexArr)))
+	for i := range indexArr {
+		uid := indexArr[i]["uid"]
+		pkBytes, err := stub.GetState(topic + "_" + PUBLICKEY + ":" + uid)
+		var pkMap map[string]interface{}
+		err = json.Unmarshal([]byte(pkBytes), &pkMap)
+		if err != nil {
+			return nil, errors.New("Failed to unmarshal key Records")
+		}
+		x, _ := new(big.Int).SetString(getSafeString(pkMap["x"]), 10)
+		y, _ := new(big.Int).SetString(getSafeString(pkMap["y"]), 10)
+		pk := ecdsa.PublicKey{DefaultCurve, x, y}
+		keyring.Add(pk)
+	}
+	return keyring, nil
 }
 
 //check whether string has value or not
@@ -243,8 +367,10 @@ func (t *sc) Invoke(stub shim.ChaincodeStubInterface) pb.Response {
 		return t.getPublicKey(stub, args)
 	} else if function == "getKeyRing" {
 		return t.getKeyRing(stub, args)
-	} else if function == "configureTopic" {
-		return t.configureTopic(stub, args)
+	} else if function == "setStage" {
+		return t.setStage(stub, args)
+	} else if function == "submit" {
+		return t.submit(stub, args)
 	}
 	return shim.Error("Invalid invoke function name.")
 }
@@ -254,6 +380,6 @@ func main() {
 
 	err := shim.Start(new(sc))
 	if err != nil {
-		fmt.Printf("Error starting Voting: %s", err)
+		fmt.Println("Error starting smart contract: %s", err)
 	}
 }

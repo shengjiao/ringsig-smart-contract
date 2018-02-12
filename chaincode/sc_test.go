@@ -130,13 +130,23 @@ func TestEndToEndWorkflow(t *testing.T) {
 	// Init without any argument
 	checkInit(t, stub, [][]byte{[]byte("init")})
 
+	//configure topic
+	topicStr := "{\"topic\":\"USpresident\",\"stage\":\"prepare\"}"
+	checkInvoke(t, stub, [][]byte{[]byte("configureTopic"), []byte(topicStr)})
 	//uid001's key
-	keyStr := "{\"uid\":\"u01\",\"x\":\"79325335377659446719061365985594928216557351703018226449107942108421649247394\",\"y\":\"32519086782170187642508289520183198737894713738318360286903070346702754579434\"}"
+	keyStr := "{\"topic\":\"USpresident\",\"uid\":\"u01\",\"x\":\"79325335377659446719061365985594928216557351703018226449107942108421649247394\",\"y\":\"32519086782170187642508289520183198737894713738318360286903070346702754579434\"}"
+	checkInvoke(t, stub, [][]byte{[]byte("initPublicKey"), []byte(keyStr)})
+	//getPublicKey
+	var valueMap map[string]interface{}
+	json.Unmarshal([]byte(keyStr), &valueMap)
+	checkQuery(t, stub, valueMap, [][]byte{[]byte("getPublicKey"), []byte("{\"topic\":\"USpresident\",\"uid\":\"u01\"}")})
+
+	//uid002's key
+	keyStr = "{\"topic\":\"USpresident\",\"uid\":\"u02\",\"x\":\"110855819708902045581138277350236606000241599806345538157278800268663949421927\",\"y\":\"66713262917835133565738665462638578244558791813636461880138560176459282784472\"}"
 	checkInvoke(t, stub, [][]byte{[]byte("initPublicKey"), []byte(keyStr)})
 
-	//getPublicKey
-	//var valueMap map[string]interface{}
-	//json.Unmarshal([]byte(keyStr), &valueMap)
-	//checkQuery(t, stub, valueMap, [][]byte{[]byte("getPublicKey"), []byte("{\"uid\":\"UID004\"}")})
-
+	keyRing := "[{\"uid\":\"u01\"},{\"uid\":\"u02\"}]"
+	var valueMapArray []map[string]interface{}
+	json.Unmarshal([]byte(keyRing), &valueMapArray)
+	checkQueryArray(t, stub, valueMapArray, [][]byte{[]byte("getKeyRing"), []byte("{\"topic\":\"USpresident\"}")})
 }

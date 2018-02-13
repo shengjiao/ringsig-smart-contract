@@ -1,4 +1,4 @@
-# ring signature smart contract
+# ring signature smart contract (hyperledger fabric chaincode)
 
 This smart contract is the chaincode to be deployed in hyperledger fabric network. It uses the unique ring signature (https://github.com/abovemealsky/urs forked from https://github.com/monero-project/urs to resolve some dependency changes).
 

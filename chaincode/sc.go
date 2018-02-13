@@ -19,6 +19,12 @@ const PUBLICKEY = "PUBLICKEY"
 //KEYRING ...
 const KEYRING = "KEYRING"
 
+//SUBMISSION ...
+const SUBMISSION = "SUBMISSION"
+
+//HARRAY ...
+const HARRAY = "HARRAY"
+
 //TOPIC ...
 var TOPIC = struct {
 	stage map[string]string
@@ -53,7 +59,7 @@ func (t *sc) Init(stub shim.ChaincodeStubInterface) pb.Response {
 }
 
 //configure topic
-
+//{topic:string, }
 //{topic:string, stage:start}
 //stage: prepare(one can init public key), start(one can submit tx for topic) or finish (no more action is allowed)
 func (t *sc) setStage(stub shim.ChaincodeStubInterface, args []string) pb.Response {
@@ -218,7 +224,7 @@ func (t *sc) getKeyRing(stub shim.ChaincodeStubInterface, args []string) pb.Resp
 	return shim.Success(keyRingDetails)
 }
 
-//{topic:string,uid:string,msg:string,sig:ring signature,keyIndex:["u01","u04","u10",...]}
+//{topic:string,msg:string,sig:ring signature,keyIndex:["u01","u04","u10",...]}
 func (t *sc) submit(stub shim.ChaincodeStubInterface, args []string) pb.Response {
 	if len(args) != 1 {
 		return shim.Error("Incorrect number of arguments. Expecting 1")
@@ -230,18 +236,16 @@ func (t *sc) submit(stub shim.ChaincodeStubInterface, args []string) pb.Response
 	if err != nil {
 		return shim.Error("failed to unmarshal")
 	}
-	if len(params) != 5 {
-		return shim.Error("Incorrect number of fields. Expecting 5.")
+	if len(params) != 4 {
+		return shim.Error("Incorrect number of fields. Expecting 4.")
 	}
 	topic := getSafeString(params["topic"])
 	err = t.checkTopic(stub, topic, TOPIC.stage["start"])
 	if err != nil {
 		return shim.Error(err.Error())
 	}
-	uid := getSafeString(params["uid"])
 	msg := getSafeString(params["msg"])
 	logger.Info("topic:", topic)
-	logger.Info("uid:", uid)
 	logger.Info("msg:", msg)
 	signature := params["sig"]
 	ringSig, err := t.parseUrsSig(stub, signature)
@@ -260,7 +264,66 @@ func (t *sc) submit(stub shim.ChaincodeStubInterface, args []string) pb.Response
 	if !urs.Verify(keyRing, []byte(msg), ringSig) {
 		return shim.Error("ring signature verification failed")
 	}
+
+	//link signature
+	isNew, err := t.linkUrsSig(stub, signature, topic)
+	if err != nil {
+		return shim.Error(err.Error())
+	}
+	if isNew {
+		//store the submission
+		err = stub.PutState(topic+"_"+SUBMISSION, []byte(recBytes))
+		if err != nil {
+			return shim.Error("failed to put submission to ledger")
+		}
+	} else {
+		logger.Error("Submission is rejected, reason: the signer already submitted this topic before")
+	}
 	return shim.Success(nil)
+}
+
+//check if the urs sig hx and hy values are identical to ones before
+func (t *sc) linkUrsSig(stub shim.ChaincodeStubInterface, signature interface{}, topic string) (bool, error) {
+	bytes, err := json.Marshal(signature)
+	if err != nil {
+		return false, errors.New("Failed to marshal signature")
+	}
+	var sigMap map[string]interface{}
+	err = json.Unmarshal(bytes, &sigMap)
+	if err != nil {
+		return false, errors.New("Failed to unmarshal sigMap")
+	}
+	hBytes, err := stub.GetState(topic + "_" + HARRAY)
+	if err != nil {
+		return false, errors.New("failed to get harray")
+	}
+	var hArr []map[string]interface{}
+	if hBytes == nil {
+		hArr = make([]map[string]interface{}, 0)
+	} else {
+		err = json.Unmarshal([]byte(hBytes), &hArr)
+		if err != nil {
+			return false, errors.New("failed to unmarshal harray")
+		}
+	}
+	for _, h := range hArr {
+		if getSafeString(sigMap["hsx"]) == getSafeString(h["hsx"]) && getSafeString(sigMap["hsy"]) == getSafeString(h["hsy"]) {
+			return false, nil
+		}
+	}
+	h := make(map[string]interface{})
+	h["hsx"] = sigMap["hsx"]
+	h["hsy"] = sigMap["hsy"]
+	hArr = append(hArr, h)
+	hBytes, err = json.Marshal(hArr)
+	if err != nil {
+		return false, errors.New("faile to marshal harr")
+	}
+	err = stub.PutState(topic+"_"+HARRAY, hBytes)
+	if err != nil {
+		return false, errors.New("failed to put harr")
+	}
+	return true, nil
 }
 
 func (t *sc) parseUrsSig(stub shim.ChaincodeStubInterface, signature interface{}) (*urs.RingSign, error) {

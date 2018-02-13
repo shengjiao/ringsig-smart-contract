@@ -6,7 +6,9 @@ This smart contract is the chaincode to be deployed in hyperledger fabric networ
 It offers the following invoke functions:
 
 ## configureTopic
-TBW
+Payload: {"topic":"Election","options":["Trump","Hillary"]}
+
+Set the content of options for this topic, participants cannot submit message not in the options list for the topic
 
 ## setStage
 Payload: {"topic":"Election","stage":"prepare"}
